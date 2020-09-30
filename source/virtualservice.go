@@ -382,15 +382,19 @@ func (sc *virtualServiceSource) endpointsFromVirtualService(ctx context.Context,
 			continue
 		}
 
+		log.Debugf("host: %v", host)
 		parts := strings.Split(host, "/")
+		log.Debugf("parts: %v", parts)
 
 		// If the input hostname is of the form my-namespace/foo.bar.com, remove the namespace
 		// before appending it to the list of endpoints to create
 		if len(parts) == 2 {
 			host = parts[1]
 		}
+		log.Debugf("host after split: %v", host)
 
 		targets := targetsFromAnnotation
+		log.Debugf("target from annotations: %v", targets)
 		if len(targets) == 0 {
 			targets, err = sc.targetsFromVirtualService(ctx, virtualservice, host)
 			log.Debugf("targets: %v", targets)
@@ -421,6 +425,7 @@ func (sc *virtualServiceSource) endpointsFromVirtualService(ctx context.Context,
 					return endpoints, err
 				}
 			}
+			log.Debugf("endpoints for hostname: %v", endpointsForHostname(hostname, targets, ttl, providerSpecific, setIdentifier))
 			endpoints = append(endpoints, endpointsForHostname(hostname, targets, ttl, providerSpecific, setIdentifier)...)
 			log.Debugf("endpoints: %v", endpoints)
 		}
