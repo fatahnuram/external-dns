@@ -15,24 +15,22 @@
 # builder image
 FROM golang:1.14 as builder
 
-WORKDIR /sigs.k8s.io/external-dns
+WORKDIR /sigs.k8s.io/ext-dns-debug
 
 COPY . .
 RUN go mod vendor && \
-    make test && \
     make build
 
 # final image
 FROM alpine:3.12
-LABEL maintainer="Team Teapot @ Zalando SE <team-teapot@zalando.de>"
 
 RUN apk add --update --no-cache ca-certificates && \
     update-ca-certificates
 
-COPY --from=builder /sigs.k8s.io/external-dns/build/external-dns /bin/external-dns
+COPY --from=builder /sigs.k8s.io/ext-dns-debug/build/ext-dns-debug /bin/ext-dns-debug
 
 # Run as UID for nobody since k8s pod securityContext runAsNonRoot can't resolve the user ID:
 # https://github.com/kubernetes/kubernetes/issues/40958
 USER 65534
 
-ENTRYPOINT ["/bin/external-dns"]
+ENTRYPOINT ["/bin/ext-dns-debug"]

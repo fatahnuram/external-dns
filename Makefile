@@ -61,11 +61,11 @@ test:
 # The build targets allow to build the binary and docker image
 .PHONY: build build.docker build.mini
 
-BINARY        ?= external-dns
+BINARY        ?= ext-dns-debug
 SOURCES        = $(shell find . -name '*.go')
 IMAGE_STAGING  = gcr.io/k8s-staging-external-dns/$(BINARY)
-IMAGE         ?= us.gcr.io/k8s-artifacts-prod/external-dns/$(BINARY)
-VERSION       ?= $(shell git describe --tags --always --dirty)
+IMAGE         ?= fatahnuram/$(BINARY)
+VERSION       ?= v0.7.3-vs
 BUILD_FLAGS   ?= -v
 LDFLAGS       ?= -X sigs.k8s.io/external-dns/pkg/apis/externaldns.Version=$(VERSION) -w -s
 

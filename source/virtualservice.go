@@ -70,6 +70,7 @@ func NewIstioVirtualServiceSource(
 	combineFQDNAnnotation bool,
 	ignoreHostnameAnnotation bool,
 ) (Source, error) {
+	log.Debugf("params in: kubeclient %v, istioclient %v, namespace %s, annotation filter %s, fqdntemplate %s, combine fqdn %t, ignore hostname %t", kubeClient, istioClient, namespace, annotationFilter, fqdnTemplate, combineFQDNAnnotation, ignoreHostnameAnnotation)
 	var (
 		tmpl *template.Template
 		err  error
@@ -82,6 +83,7 @@ func NewIstioVirtualServiceSource(
 		if err != nil {
 			return nil, err
 		}
+		log.Debug("template")
 	}
 
 	// Use shared informers to listen for add/update/delete of services/pods/nodes in the specified namespace.
@@ -90,6 +92,11 @@ func NewIstioVirtualServiceSource(
 	serviceInformer := informerFactory.Core().V1().Services()
 	istioInformerFactory := istioinformers.NewSharedInformerFactory(istioClient, 0)
 	virtualServiceInformer := istioInformerFactory.Networking().V1alpha3().VirtualServices()
+
+	log.Debugf("informer factory: %s", informerFactory)
+	log.Debugf("service informer: %s", serviceInformer)
+	log.Debugf("istio informer factory: %s", istioInformerFactory)
+	log.Debugf("vs informer: %s", virtualServiceInformer)
 
 	// Add default resource event handlers to properly initialize informer.
 	serviceInformer.Informer().AddEventHandler(
@@ -114,6 +121,7 @@ func NewIstioVirtualServiceSource(
 
 	// wait for the local cache to be populated.
 	err = wait.Poll(time.Second, 60*time.Second, func() (bool, error) {
+		log.Debugf("service informer has synced: %t", serviceInformer.Informer().HasSynced())
 		return serviceInformer.Informer().HasSynced(), nil
 	})
 	if err != nil {
@@ -121,13 +129,14 @@ func NewIstioVirtualServiceSource(
 	}
 
 	err = wait.Poll(time.Second, 60*time.Second, func() (bool, error) {
+		log.Debugf("vs informer has synced: %t", virtualServiceInformer.Informer().HasSynced())
 		return virtualServiceInformer.Informer().HasSynced(), nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to sync cache: %v", err)
 	}
 
-	return &virtualServiceSource{
+	x := virtualServiceSource{
 		kubeClient:               kubeClient,
 		istioClient:              istioClient,
 		namespace:                namespace,
@@ -137,19 +146,25 @@ func NewIstioVirtualServiceSource(
 		ignoreHostnameAnnotation: ignoreHostnameAnnotation,
 		serviceInformer:          serviceInformer,
 		virtualserviceInformer:   virtualServiceInformer,
-	}, nil
+	}
+	log.Debugf("vs source: %v", x)
+
+	return &x, nil
 }
 
 // Endpoints returns endpoint objects for each host-target combination that should be processed.
 // Retrieves all VirtualService resources in the source's namespace(s).
 func (sc *virtualServiceSource) Endpoints(ctx context.Context) ([]*endpoint.Endpoint, error) {
 	virtualServiceList, err := sc.istioClient.NetworkingV1alpha3().VirtualServices(sc.namespace).List(ctx, metav1.ListOptions{})
+	log.Debugf("vs list: %v", virtualServiceList)
 	if err != nil {
 		return nil, err
 	}
 
 	virtualServices := virtualServiceList.Items
+	log.Debugf("vs items: %v", virtualServices)
 	virtualServices, err = sc.filterByAnnotations(virtualServices)
+	log.Debugf("vs items by annotations: %v", virtualServices)
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +174,7 @@ func (sc *virtualServiceSource) Endpoints(ctx context.Context) ([]*endpoint.Endp
 	for _, virtualService := range virtualServices {
 		// Check controller annotation to see if we are responsible.
 		controller, ok := virtualService.Annotations[controllerAnnotationKey]
+		log.Debugf("vs controller: %v ok: %t", controller, ok)
 		if ok && controller != controllerAnnotationValue {
 			log.Debugf("Skipping VirtualService %s/%s because controller value does not match, found: %s, required: %s",
 				virtualService.Namespace, virtualService.Name, controller, controllerAnnotationValue)
@@ -166,16 +182,20 @@ func (sc *virtualServiceSource) Endpoints(ctx context.Context) ([]*endpoint.Endp
 		}
 
 		gwEndpoints, err := sc.endpointsFromVirtualService(ctx, virtualService)
+		log.Debugf("gw endpoint: %v", gwEndpoints)
 		if err != nil {
 			return nil, err
 		}
 
+		log.Debugf("combineFQDNAnnotation: %t", sc.combineFQDNAnnotation)
+		log.Debugf("len gw endpoint: %d", len(gwEndpoints))
 		// apply template if host is missing on VirtualService
 		if (sc.combineFQDNAnnotation || len(gwEndpoints) == 0) && sc.fqdnTemplate != nil {
 			iEndpoints, err := sc.endpointsFromTemplate(ctx, virtualService)
 			if err != nil {
 				return nil, err
 			}
+			log.Debugf("i endpoint: %v", iEndpoints)
 
 			if sc.combineFQDNAnnotation {
 				gwEndpoints = append(gwEndpoints, iEndpoints...)
@@ -184,6 +204,7 @@ func (sc *virtualServiceSource) Endpoints(ctx context.Context) ([]*endpoint.Endp
 			}
 		}
 
+		log.Debugf("len gw endpoint: %d", len(gwEndpoints))
 		if len(gwEndpoints) == 0 {
 			log.Debugf("No endpoints could be generated from VirtualService %s/%s", virtualService.Namespace, virtualService.Name)
 			continue
@@ -194,6 +215,7 @@ func (sc *virtualServiceSource) Endpoints(ctx context.Context) ([]*endpoint.Endp
 		endpoints = append(endpoints, gwEndpoints...)
 	}
 
+	log.Debugf("endpoints: %v", endpoints)
 	for _, ep := range endpoints {
 		sort.Sort(ep.Targets)
 	}
@@ -343,13 +365,17 @@ func (sc *virtualServiceSource) endpointsFromVirtualService(ctx context.Context,
 	var endpoints []*endpoint.Endpoint
 
 	ttl, err := getTTLFromAnnotations(virtualservice.Annotations)
+	log.Debugf("ttl: %v", ttl)
 	if err != nil {
 		log.Warn(err)
 	}
 
 	targetsFromAnnotation := getTargetsFromTargetAnnotation(virtualservice.Annotations)
+	log.Debugf("targetsFromAnnotation: %v", targetsFromAnnotation)
 
 	providerSpecific, setIdentifier := getProviderSpecificAnnotations(virtualservice.Annotations)
+	log.Debugf("providerSpecific: %v", providerSpecific)
+	log.Debugf("setIdentifier: %v", setIdentifier)
 
 	for _, host := range virtualservice.Spec.Hosts {
 		if host == "" || host == "*" {
@@ -367,26 +393,36 @@ func (sc *virtualServiceSource) endpointsFromVirtualService(ctx context.Context,
 		targets := targetsFromAnnotation
 		if len(targets) == 0 {
 			targets, err = sc.targetsFromVirtualService(ctx, virtualservice, host)
+			log.Debugf("targets: %v", targets)
+
 			if err != nil {
+				log.Debugf("endpoints on error: %v", endpoints)
 				return endpoints, err
 			}
 		}
 
 		endpoints = append(endpoints, endpointsForHostname(host, targets, ttl, providerSpecific, setIdentifier)...)
+		log.Debugf("endpoints: %v", endpoints)
 	}
 
+	log.Debugf("ignoreHostnameAnnotation: %v", sc.ignoreHostnameAnnotation)
 	// Skip endpoints if we do not want entries from annotations
 	if !sc.ignoreHostnameAnnotation {
 		hostnameList := getHostnamesFromAnnotations(virtualservice.Annotations)
+		log.Debugf("hostnameList: %v", hostnameList)
 		for _, hostname := range hostnameList {
 			targets := targetsFromAnnotation
+			log.Debugf("targets: %v", targets)
 			if len(targets) == 0 {
 				targets, err = sc.targetsFromVirtualService(ctx, virtualservice, hostname)
+				log.Debugf("targets from vs: %v", targets)
 				if err != nil {
+					log.Debugf("endpoints on error: %v", endpoints)
 					return endpoints, err
 				}
 			}
 			endpoints = append(endpoints, endpointsForHostname(hostname, targets, ttl, providerSpecific, setIdentifier)...)
+			log.Debugf("endpoints: %v", endpoints)
 		}
 	}
 
