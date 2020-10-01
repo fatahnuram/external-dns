@@ -69,6 +69,7 @@ type serviceSource struct {
 
 // NewServiceSource creates a new serviceSource with the given config.
 func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilter string, fqdnTemplate string, combineFqdnAnnotation bool, compatibility string, publishInternal bool, publishHostIP bool, alwaysPublishNotReadyAddresses bool, serviceTypeFilter []string, ignoreHostnameAnnotation bool) (Source, error) {
+	log.Debugf("params in: kubeclient %v, namespace %s, annotation filter %s, fqdn template %s, combineFqdnAnnotation %t, compatibility %s, publishInternal %t, publishHostIP %t, alwaysPublishNotReadyAddresses %t, serviceTypeFilter %v, ignoreHostnameAnnotation %t", kubeClient, namespace, annotationFilter, fqdnTemplate, combineFqdnAnnotation, compatibility, publishInternal, publishHostIP, alwaysPublishNotReadyAddresses, serviceTypeFilter, ignoreHostnameAnnotation)
 	var (
 		tmpl *template.Template
 		err  error
@@ -80,6 +81,7 @@ func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilt
 		if err != nil {
 			return nil, err
 		}
+		log.Debug("template")
 	}
 
 	// Use shared informers to listen for add/update/delete of services/pods/nodes in the specified namespace.
@@ -89,6 +91,12 @@ func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilt
 	endpointsInformer := informerFactory.Core().V1().Endpoints()
 	podInformer := informerFactory.Core().V1().Pods()
 	nodeInformer := informerFactory.Core().V1().Nodes()
+
+	log.Debugf("informerFactory: %v", informerFactory)
+	log.Debugf("serviceInformer: %v", serviceInformer)
+	log.Debugf("endpointsInformer: %v", endpointsInformer)
+	log.Debugf("podInformer: %v", podInformer)
+	log.Debugf("nodeInformer: %v", nodeInformer)
 
 	// Add default resource event handlers to properly initialize informer.
 	serviceInformer.Informer().AddEventHandler(
@@ -121,6 +129,11 @@ func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilt
 
 	// wait for the local cache to be populated.
 	err = poll(time.Second, 60*time.Second, func() (bool, error) {
+		log.Debugf("serviceInformer has sync: %t", serviceInformer.Informer().HasSynced())
+		log.Debugf("endpointsInformer has sync: %t", endpointsInformer.Informer().HasSynced())
+		log.Debugf("podInformer has sync: %t", podInformer.Informer().HasSynced())
+		log.Debugf("nodeInformer has sync: %t", nodeInformer.Informer().HasSynced())
+
 		return serviceInformer.Informer().HasSynced() &&
 			endpointsInformer.Informer().HasSynced() &&
 			podInformer.Informer().HasSynced() &&
@@ -136,8 +149,9 @@ func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilt
 	for _, serviceType := range serviceTypeFilter {
 		serviceTypes[serviceType] = struct{}{}
 	}
+	log.Debugf("serviceTypes: %v", serviceTypes)
 
-	return &serviceSource{
+	x := serviceSource{
 		client:                         kubeClient,
 		namespace:                      namespace,
 		annotationFilter:               annotationFilter,
@@ -153,16 +167,21 @@ func NewServiceSource(kubeClient kubernetes.Interface, namespace, annotationFilt
 		podInformer:                    podInformer,
 		nodeInformer:                   nodeInformer,
 		serviceTypeFilter:              serviceTypes,
-	}, nil
+	}
+	log.Debugf("serviceSource: %v", x)
+
+	return &x, nil
 }
 
 // Endpoints returns endpoint objects for each service that should be processed.
 func (sc *serviceSource) Endpoints(ctx context.Context) ([]*endpoint.Endpoint, error) {
 	services, err := sc.serviceInformer.Lister().Services(sc.namespace).List(labels.Everything())
+	log.Debugf("services list: %v", services)
 	if err != nil {
 		return nil, err
 	}
 	services, err = sc.filterByAnnotations(services)
+	log.Debugf("services list by annotations: %v", services)
 	if err != nil {
 		return nil, err
 	}
@@ -170,6 +189,7 @@ func (sc *serviceSource) Endpoints(ctx context.Context) ([]*endpoint.Endpoint, e
 	// filter on service types if at least one has been provided
 	if len(sc.serviceTypeFilter) > 0 {
 		services = sc.filterByServiceType(services)
+		log.Debugf("services list by type: %v", services)
 	}
 
 	endpoints := []*endpoint.Endpoint{}
@@ -177,6 +197,7 @@ func (sc *serviceSource) Endpoints(ctx context.Context) ([]*endpoint.Endpoint, e
 	for _, svc := range services {
 		// Check controller annotation to see if we are responsible.
 		controller, ok := svc.Annotations[controllerAnnotationKey]
+		log.Debugf("services controller: %v ok: %t", controller, ok)
 		if ok && controller != controllerAnnotationValue {
 			log.Debugf("Skipping service %s/%s because controller value does not match, found: %s, required: %s",
 				svc.Namespace, svc.Name, controller, controllerAnnotationValue)
@@ -184,15 +205,18 @@ func (sc *serviceSource) Endpoints(ctx context.Context) ([]*endpoint.Endpoint, e
 		}
 
 		svcEndpoints := sc.endpoints(svc)
+		log.Debugf("services endpoints: %v", svcEndpoints)
 
 		// process legacy annotations if no endpoints were returned and compatibility mode is enabled.
 		if len(svcEndpoints) == 0 && sc.compatibility != "" {
 			svcEndpoints = legacyEndpointsFromService(svc, sc.compatibility)
+			log.Debugf("services endpoints legacy: %v", svcEndpoints)
 		}
 
 		// apply template if none of the above is found
 		if (sc.combineFQDNAnnotation || len(svcEndpoints) == 0) && sc.fqdnTemplate != nil {
 			sEndpoints, err := sc.endpointsFromTemplate(svc)
+			log.Debugf("services endpoints from template: %v", sEndpoints)
 			if err != nil {
 				return nil, err
 			}
@@ -202,6 +226,7 @@ func (sc *serviceSource) Endpoints(ctx context.Context) ([]*endpoint.Endpoint, e
 			} else {
 				svcEndpoints = sEndpoints
 			}
+			log.Debugf("services endpoints total: %v", svcEndpoints)
 		}
 
 		if len(svcEndpoints) == 0 {
@@ -213,6 +238,7 @@ func (sc *serviceSource) Endpoints(ctx context.Context) ([]*endpoint.Endpoint, e
 		sc.setResourceLabel(svc, svcEndpoints)
 		endpoints = append(endpoints, svcEndpoints...)
 	}
+	log.Debugf("endpoints: %v", endpoints)
 
 	for _, ep := range endpoints {
 		sort.Sort(ep.Targets)
